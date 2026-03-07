@@ -1,0 +1,11 @@
+/target
+**/*.rs.bk
+Cargo.lock
+.env
+/tmp_browser_profiles
+
+# Added by cargo
+#
+# already existing elements were commented out
+
+#/target
