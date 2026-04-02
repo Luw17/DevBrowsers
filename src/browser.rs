@@ -5,6 +5,8 @@ pub struct BrowserInstance {
     pub name: String,
     pub process: Child,
     pub profile_dir: String,
+    pub is_ephemeral: bool,
+    pub debug_port: u16,
 }
 
 pub fn find_chromium() -> Option<String> {

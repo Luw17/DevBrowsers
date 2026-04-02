@@ -1,5 +1,11 @@
 mod app;
 mod browser;
+mod cdp;
+mod clipboard;
+mod project;
+mod ui_main;
+mod ui_projects;
+mod ui_vault;
 mod vault;
 
 use app::DevBrowsersApp;
