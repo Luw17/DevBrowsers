@@ -1,9 +1,8 @@
 use eframe::egui;
-use std::process::{Command, Stdio};
+use std::fs;
 use crate::app::DevBrowsersApp;
-use crate::browser::{find_chromium, BrowserInstance};
 
-pub fn render(app: &mut DevBrowsersApp, ctx: &egui::Context) {
+pub fn render(app: &mut DevBrowsersApp, ui: &mut egui::Ui) {
     let mut instances_to_remove = Vec::new();
 
     for instance in &mut app.instances {
@@ -14,156 +13,161 @@ pub fn render(app: &mut DevBrowsersApp, ctx: &egui::Context) {
     
     app.instances.retain(|inst| !instances_to_remove.contains(&inst.id));
 
-    let mut frame_style = egui::Frame::window(&ctx.style());
-    frame_style.inner_margin = egui::Margin::same(12.0);
-    frame_style.rounding = egui::Rounding::same(8.0);
-
-    egui::CentralPanel::default().frame(frame_style).show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            if ui.button("▶ Chromium").clicked() {
-                if let Some(browser_bin) = find_chromium() {
-                    let profile_dir = format!("/tmp/devbrowser_profile_{}", app.next_id);
-                    let _ = std::fs::create_dir_all(&profile_dir);
-                    let debug_port = 9222 + app.next_id as u16;
-
-                    let child = Command::new(&browser_bin)
-                        .arg(format!("--user-data-dir={}", profile_dir))
-                        .arg(format!("--remote-debugging-port={}", debug_port))
-                        .arg("--no-first-run")
-                        .arg("--no-default-browser-check")
-                        .arg("--disable-sync")
-                        .arg(&app.url_input)
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .spawn();
-
-                    if let Ok(process) = child {
-                        app.instances.push(BrowserInstance {
-                            id: app.next_id,
-                            name: format!("Instância #{}", app.next_id),
-                            process,
-                            profile_dir,
-                            is_ephemeral: true,
-                            debug_port,
-                        });
-                        app.next_id += 1;
-                    }
-                }
-            }
-
-            ui.add(egui::TextEdit::singleline(&mut app.url_input).desired_width(200.0));
-
-            if ui.button("⏹ Tudo").clicked() {
-                for instance in &mut app.instances {
-                    let _ = instance.process.kill();
-                    if instance.is_ephemeral {
-                        let _ = std::fs::remove_dir_all(&instance.profile_dir);
-                    }
-                }
-                app.instances.clear();
-            }
-
-            ui.separator();
+    ui.horizontal(|ui| {
+        if ui.button("▶ Abrir Limpo").clicked() {
+            let profile_dir = format!("/tmp/devbrowser_profile_{}", app.next_id);
+            let b_name = match app.default_browser { crate::browser::BrowserType::Chromium => "Chromium", crate::browser::BrowserType::Firefox => "Firefox" };
             
-            if ui.button("📂 Projetos").clicked() { 
-                app.show_projects = !app.show_projects; 
-                if app.show_projects {
-                    app.projects = crate::project::load_projects();
-                }
+            if let Ok(inst) = crate::browser::launch(app.next_id, app.default_browser.clone(), &profile_dir, vec![&app.url_input], true, b_name) {
+                app.instances.push(inst);
+                app.next_id += 1;
             }
-            
-            if ui.button("⚙ Cofre").clicked() { 
-                app.show_vault = !app.show_vault; 
-            }
-            
-            ui.separator();
+        }
 
+        ui.add(egui::TextEdit::singleline(&mut app.url_input).desired_width(300.0).hint_text("URL inicial..."));
+
+        if ui.button("⏹ Fechar Todas").clicked() {
             for instance in &mut app.instances {
-                ui.group(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(&instance.name);
+                let _ = instance.process.kill();
+                if instance.is_ephemeral {
+                    let _ = fs::remove_dir_all(&instance.profile_dir);
+                }
+            }
+            app.instances.clear();
+        }
+    });
+
+    ui.separator();
+    ui.heading("Navegadores em Execução");
+    ui.add_space(8.0);
+
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        for instance in &mut app.instances {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    let icon = match instance.b_type {
+                        crate::browser::BrowserType::Chromium => "🌐",
+                        crate::browser::BrowserType::Firefox => "🦊",
+                    };
+                    
+                    ui.label(egui::RichText::new(format!("{} {}", icon, instance.name)).strong());
+                    
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("✕ Fechar").clicked() {
+                            let _ = instance.process.kill();
+                            if instance.is_ephemeral {
+                                let _ = fs::remove_dir_all(&instance.profile_dir);
+                            }
+                            instances_to_remove.push(instance.id);
+                        }
+
                         if ui.button("🔑 Injetar Credencial").clicked() {
-                            println!("--- INICIANDO INJEÇÃO INSTÂNCIA {} ---", instance.id);
+                            println!("--- INICIANDO INJEÇÃO {} INSTÂNCIA {} ---", icon, instance.id);
                             
-                            let mut selected_idx = None;
-                            for (i, c) in app.credentials.iter().enumerate() {
-                                if c.selected {
-                                    selected_idx = Some(i);
-                                    break;
+                            for cred in &mut app.credentials {
+                                if cred.selected && !cred.fetched {
+                                    app.keepass.fetch_details(cred);
                                 }
                             }
-                            
-                            if let Some(idx) = selected_idx {
-                                if !app.credentials[idx].fetched {
-                                    println!("-> Descriptografando senha no KeePass...");
-                                    let mut cred = app.credentials[idx].clone();
-                                    app.keepass.fetch_details(&mut cred);
-                                    app.credentials[idx] = cred;
-                                }
 
-                                let cred = &app.credentials[idx];
-                                println!("-> Credencial marcada: {}", cred.site_name);
-                                println!("-> Possui senha carregada? {}", !cred.password.is_empty());
-
-                                match crate::cdp::get_targets(instance.debug_port) {
+                            if instance.b_type == crate::browser::BrowserType::Chromium {
+                                if instance.ws_url.is_empty() { println!("-> ERRO: URL WebSocket não capturada. Feche e abra o navegador novamente."); }
+                                match crate::cdp::get_targets(&instance.ws_url, instance.debug_port) {
                                     Ok(targets) => {
                                         for target in targets {
                                             if target.url.starts_with("http") {
-                                                if let Some(ws_url) = &target.web_socket_debugger_url {
-                                                    let safe_user = cred.username.replace("'", "\\'");
-                                                    let safe_pass = cred.password.replace("'", "\\'");
-                                                    
-                                                    let js_code = format!(
-                                                        r#"
-                                                        (function() {{
-                                                            let passField = document.querySelector('input[type="password"]');
-                                                            if (!passField) return 'ERRO: Campo de senha não encontrado';
-                                                            let form = passField.closest('form');
-                                                            let userField = form ? form.querySelector('input[type="text"], input[type="email"], input:not([type="password"]):not([type="hidden"])') : document.querySelector('input[type="text"], input[type="email"]');
-                                                            
-                                                            if (userField) {{
-                                                                userField.value = '{}';
-                                                                userField.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                                                                userField.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                                                            }}
-                                                            passField.value = '{}';
-                                                            passField.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                                                            passField.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                                                            return 'SUCESSO: Credencial Injetada!';
-                                                        }})();
-                                                        "#, safe_user, safe_pass
-                                                    );
-                                                    
-                                                    let params = serde_json::json!({
-                                                        "expression": js_code
-                                                    });
-                                                    let _ = crate::cdp::send_cdp_command(ws_url, "Runtime.evaluate", params);
+                                                let mut best_cred = None;
+                                                let clean_target = target.url.replace("https://", "").replace("http://", "").replace("www.", "");
+                                                let target_domain = clean_target.split('/').next().unwrap_or("").split('?').next().unwrap_or("");
+
+                                                for cred in &app.credentials {
+                                                    if cred.selected && cred.fetched && !cred.url.is_empty() {
+                                                        let clean_cred = cred.url.replace("https://", "").replace("http://", "").replace("www.", "");
+                                                        let cred_domain = clean_cred.split('/').next().unwrap_or("").split('?').next().unwrap_or("");
+                                                        if !target_domain.is_empty() && target_domain == cred_domain {
+                                                            best_cred = Some(cred.clone());
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+
+                                                if best_cred.is_none() {
+                                                    let selected_creds: Vec<_> = app.credentials.iter().filter(|c| c.selected && c.fetched).collect();
+                                                    if selected_creds.len() == 1 { best_cred = Some(selected_creds[0].clone()); }
+                                                }
+
+                                                if let Some(cred) = best_cred {
+                                                    if let Some(ws_url) = &target.web_socket_debugger_url {
+                                                        println!("-> Injetando na aba {}", target.url);
+                                                        let safe_user = cred.username.replace("'", "\\'");
+                                                        let safe_pass = cred.password.replace("'", "\\'");
+                                                        
+                                                        let js_code = format!(
+                                                            r#"(function() {{ let passField = document.querySelector('input[type="password"]'); if (!passField) return 'ERRO'; let form = passField.closest('form'); let userField = form ? form.querySelector('input[type="text"], input[type="email"], input:not([type="password"]):not([type="hidden"])') : document.querySelector('input[type="text"], input[type="email"]'); if (userField) {{ userField.value = '{}'; userField.dispatchEvent(new Event('input', {{ bubbles: true }})); userField.dispatchEvent(new Event('change', {{ bubbles: true }})); }} passField.value = '{}'; passField.dispatchEvent(new Event('input', {{ bubbles: true }})); passField.dispatchEvent(new Event('change', {{ bubbles: true }})); return 'SUCESSO'; }})();"#, safe_user, safe_pass
+                                                        );
+                                                        
+                                                        let params = serde_json::json!({ "expression": js_code });
+                                                        match crate::cdp::send_cdp_command(ws_url, "Runtime.evaluate", params) {
+                                                            Ok(res) => println!("-> Resposta CDP: {}", res),
+                                                            Err(e) => println!("-> ERRO no envio CDP: {}", e),
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
                                     },
-                                    Err(e) => println!("-> ERRO HTTP: {}", e),
+                                    Err(e) => println!("-> ERRO CDP: {}", e),
                                 }
-                            } else {
-                                println!("-> Nenhuma credencial marcada na janela do cofre!");
+                            } else if instance.b_type == crate::browser::BrowserType::Firefox {
+                                match crate::bidi::get_targets(instance.debug_port) {
+                                    Ok(targets) => {
+                                        for target in targets {
+                                            if target.url.starts_with("http") {
+                                                let mut best_cred = None;
+                                                let clean_target = target.url.replace("https://", "").replace("http://", "").replace("www.", "");
+                                                let target_domain = clean_target.split('/').next().unwrap_or("").split('?').next().unwrap_or("");
+
+                                                for cred in &app.credentials {
+                                                    if cred.selected && cred.fetched && !cred.url.is_empty() {
+                                                        let clean_cred = cred.url.replace("https://", "").replace("http://", "").replace("www.", "");
+                                                        let cred_domain = clean_cred.split('/').next().unwrap_or("").split('?').next().unwrap_or("");
+                                                        if !target_domain.is_empty() && target_domain == cred_domain {
+                                                            best_cred = Some(cred.clone());
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+
+                                                if best_cred.is_none() {
+                                                    let selected_creds: Vec<_> = app.credentials.iter().filter(|c| c.selected && c.fetched).collect();
+                                                    if selected_creds.len() == 1 { best_cred = Some(selected_creds[0].clone()); }
+                                                }
+
+                                                if let Some(cred) = best_cred {
+                                                    println!("-> Injetando na aba {}", target.url);
+                                                    let safe_user = cred.username.replace("'", "\\'");
+                                                    let safe_pass = cred.password.replace("'", "\\'");
+                                                    
+                                                    let js_code = format!(
+                                                        r#"(function() {{ let passField = document.querySelector('input[type="password"]'); if (!passField) return 'ERRO'; let form = passField.closest('form'); let userField = form ? form.querySelector('input[type="text"], input[type="email"], input:not([type="password"]):not([type="hidden"])') : document.querySelector('input[type="text"], input[type="email"]'); if (userField) {{ userField.value = '{}'; userField.dispatchEvent(new Event('input', {{ bubbles: true }})); userField.dispatchEvent(new Event('change', {{ bubbles: true }})); }} passField.value = '{}'; passField.dispatchEvent(new Event('input', {{ bubbles: true }})); passField.dispatchEvent(new Event('change', {{ bubbles: true }})); return 'SUCESSO'; }})();"#, safe_user, safe_pass
+                                                    );
+                                                    
+                                                    match crate::bidi::inject_js(instance.debug_port, &target.id, &js_code) {
+                                                        Ok(res) => println!("-> Resposta BiDi: {}", res),
+                                                        Err(e) => println!("-> ERRO no envio BiDi: {}", e),
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                    Err(e) => println!("-> ERRO BiDi: {}", e),
+                                }
                             }
-                        }
-                        if ui.button("✕").clicked() {
-                            let _ = instance.process.kill();
-                            if instance.is_ephemeral {
-                                let _ = std::fs::remove_dir_all(&instance.profile_dir);
-                            }
-                            instances_to_remove.push(instance.id);
                         }
                     });
                 });
-            }
-            
-            app.instances.retain(|inst| !instances_to_remove.contains(&inst.id));
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("✕").clicked() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
             });
-        });
+            ui.add_space(4.0);
+        }
     });
 }

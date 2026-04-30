@@ -1,31 +1,26 @@
 mod app;
+mod bidi;
 mod browser;
 mod cdp;
-mod clipboard;
 mod project;
 mod ui_main;
 mod ui_projects;
 mod ui_vault;
 mod vault;
 
-use app::DevBrowsersApp;
 use eframe::egui;
 
-fn main() -> eframe::Result<()> {
+fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1000.0, 45.0])
-            .with_min_inner_size([400.0, 45.0])
-            .with_max_inner_size([4000.0, 45.0])
-            .with_decorations(false)
-            .with_always_on_top()
-            .with_position([460.0, 10.0]),
+            .with_inner_size([900.0, 700.0])
+            .with_min_inner_size([600.0, 500.0]),
         ..Default::default()
     };
 
     eframe::run_native(
         "DevBrowsers",
         options,
-        Box::new(|_cc| Box::new(DevBrowsersApp::default())),
+        Box::new(|_cc| Box::new(app::DevBrowsersApp::default())),
     )
 }
